@@ -1,5 +1,5 @@
 # TCMbio
-## TCMbio is an interactive web application for analyzing the intratumoral microbial landscape and exploring the biological functions of intratumoral microbes based on the bacteria and fungus data of 9,853 primary tumor and 732 solid normal tissue samples sourced from the TCGA using a standard processing pipeline.
+## TCMbio is an interactive web application for analyzing the intratumoral microbial landscape and exploring the biological functions of intratumoral microbes based on the bacteria and fungus data of 9,853 primary tumor and 732 solid normal tissue samples sourced from the TCGA using an optimized processing pipeline.
 ### Pan-Cancer
 #### TCMbio allows users to perform multiple interactive analysis based on the landscape of intratumoral bacteria and fungus across 33 types of cancer. 
 ##### Microbiome component
