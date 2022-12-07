@@ -1,0 +1,135 @@
+plot.width=12
+plot.width=12
+plot.width=12
+---
+title: "TCGA-OV"
+author:
+  - 生大双
+---
+加载R包
+```{r include=FALSE}
+library(reshape2)
+library(dplyr)
+library(rjson)
+library(phyloseq)
+library(Seurat)
+library(jsonlite)
+```
+数据读取
+```{r}
+prefix = "CESC" #give the prefix of files定义生成的文件名前缀
+level = "s" #指定微生物分类等级
+microbiome_count = paste0("../data/", prefix, "_kresult_", level, ".csv") # 微生物计数表
+your_sampleFile = "../data/TCGA_CDR.csv" ##指定样本metadata文件
+cibersort = "../data/TCGA-cibersort-relative.csv" #指定免疫细胞组成数据
+subtype = "../data/TCGA-subtype.csv" #指定免疫分型文件
+json = paste0("../data/", prefix, "_metadata_cart.json") #匹配文件编号
+name_match = paste0("../data/", prefix, "_kresult_name.csv")
+menifest = paste0("../data/", prefix, "_gdc_manifest.csv")
+```
+
+metadata整理
+```{r}
+metadata1 <- read.csv(your_sampleFile, header=T)
+metadata1 <- metadata1[metadata1$type==prefix,]
+
+metadata2 <- read.csv(cibersort, header=T)
+metadata2 <- metadata2[metadata2$type==prefix,]
+metadata2$SampleID <- substr(metadata2$SampleID,1,16)
+metadata2$PatientID <- substr(metadata2$SampleID,1,12)
+metadata2$SampleType <- substr(metadata2$SampleID,14,15)
+metadata2 <- metadata2[metadata2$SampleType=="01",]
+
+metadata3 <- read.csv(subtype, header=T)
+metadata3 <- metadata3[metadata3$type==prefix,]
+
+metadata <- merge(metadata1, metadata2,all = T) %>%
+  merge(metadata3,all = T)
+```
+
+整理样本名和样本编号匹配的文件
+```{r}
+jsondata <- fromJSON(file = paste0("../data/", prefix, "_metadata_cart.json"))
+id <- NA
+file_id <- NA
+for (i in 1:length(jsondata)) {
+  id[i] <- jsondata[[i]][["associated_entities"]][[1]][["entity_submitter_id"]]
+  file_id[i] <- jsondata[[i]][["file_id"]]
+}
+meta <- data.frame(file_id, id)
+
+match_id <- read.csv(name_match, header = T)
+
+manifest <- read.csv(menifest, header = T)[c(1,2)]
+names(manifest)[1] <- "file_name"
+names(manifest)[2] <- "file_id"
+
+match_id <- merge(match_id, manifest) %>%
+  left_join(meta) %>%
+  tibble::column_to_rownames("X")
+
+```
+
+整理微生物数据
+```{r}
+micro_count <- read.csv(microbiome_count, row.names = 1, header = T)
+micro_count1 <- micro_count[-grep("k__Viruses", rownames(micro_count)),]
+
+row.names(micro_count1) <- gsub("[|]",".", row.names(micro_count1))
+
+name_raw <- substr(row.names(micro_count1),regexpr(paste0(level, "__"),row.names(micro_count1)), regexpr(paste0(level, "__"), row.names(micro_count1))+300)
+name_raw[which(duplicated(name_raw))]
+rownames(micro_count1) <- name_raw
+colnames(micro_count1) <- match_id[colnames(micro_count1), "id"]
+colnames(micro_count1) <- substr(colnames(micro_count1), 1, 16)
+micro_data <- otu_table(micro_count1, taxa_are_rows = T)
+```
+
+整理微生物数据-log(CPM+1)
+```{r}
+micro_count2 <- NormalizeData(micro_count1, normalization.method = "RC", scale.factor = 1e6, margin = 2) %>% as.matrix()
+micro_count2 <- log(micro_count2+1)
+micro_data2 <- otu_table(micro_count2, taxa_are_rows = T)
+```
+
+
+```{r}
+match_id1 <- data.frame(SampleID = substr(match_id[,3],1,16),
+                        PatientID = substr(match_id[,3],1,12))
+metadata <- left_join(match_id1, metadata[colnames(metadata)!="SampleID"], by = "PatientID")
+metadata$SampleType <- substr(metadata$SampleID, 14,15)
+# 提取癌与癌旁的metadata
+metadata4 <- metadata[c("SampleID", "SampleType")] %>%
+  tibble::column_to_rownames("SampleID") %>%
+  sample_data()
+metadata5 <- metadata %>%
+  tibble::column_to_rownames("SampleID") %>%
+  sample_data()
+```
+
+准备一般比较及癌与癌旁比较的数据
+```{r}
+phy_dat1 <- phyloseq(micro_data,metadata4)
+phy_dat1 <- prune_samples(phy_dat1@sam_data$SampleType%in%c("01", "11"), phy_dat1)
+phy_dat1@sam_data$SampleType <- ifelse(phy_dat1@sam_data$SampleType=="01", "tumor", "normal")
+phy_dat2 <- phyloseq(micro_data,metadata5) 
+phy_dat2 <- prune_samples(phy_dat2@sam_data$SampleType=="01", phy_dat2)
+```
+准备一般比较及癌与癌旁比较的数据——logCPM
+```{r}
+phy_dat3 <- phyloseq(micro_data2,metadata4)
+phy_dat3 <- prune_samples(phy_dat3@sam_data$SampleType%in%c("01", "11"), phy_dat3)
+phy_dat3@sam_data$SampleType <- ifelse(phy_dat3@sam_data$SampleType=="01", "tumor", "normal")
+phy_dat4 <- phyloseq(micro_data2,metadata5)
+phy_dat4 <- prune_samples(phy_dat4@sam_data$SampleType=="01", phy_dat4)
+
+```
+
+输出结果
+```{r}
+saveRDS(phy_dat1, paste0("../temp/", prefix, "_", level, "_tumorvsnormal.RData"))
+saveRDS(phy_dat2, paste0("../temp/", prefix, "_", level, "_all.RData"))
+saveRDS(phy_dat3, paste0("../temp/", prefix, "_", level, "_tumorvsnormal_logCPM.RData"))
+saveRDS(phy_dat4, paste0("../temp/", prefix, "_", level, "_all_logCPM.RData"))
+
+```

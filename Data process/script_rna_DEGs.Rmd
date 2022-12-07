@@ -1,0 +1,256 @@
+---
+title: "script_DEGs"
+author: "ykl"
+date: "2022/8/26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 加载依赖的包
+```{r, include=F}
+library("RColorBrewer")
+suppressMessages(library("gplots"))
+library("amap") 
+library("reshape2")
+library("ggplot2")
+library("ggrepel")
+library("pheatmap")
+suppressMessages(library(DESeq2))
+library("BiocParallel")
+library("tximport")
+library("readr")
+library("ggpubr")
+library("ggthemes")
+library("ggord")
+library(data.table)
+library("scatterplot3d")
+library(data.table)
+```
+
+#读取数据1
+```{r}
+#counts转tpm
+countToTpm <- function(counts, effLen)
+{
+  rate <- log(counts) - log(effLen)
+  denom <- log(colSums(exp(rate)))
+  t(exp(t(rate) - denom + log(1e6)))
+}
+
+path <- "../data/TCGA_rna_counts/"
+file_names <- list.files(pattern = "-Counts.csv$",path = "../data/TCGA_rna_counts/")  
+for (i in 1:length(file_names)) {
+  name=file_names[i]
+  prefixa = gsub("TCGA-","",name,fixed = T)
+  prefix = gsub("-Counts.csv","",prefixa,fixed = T)
+ rna_count <- fread(paste0(path,file_names[i]), header = TRUE, stringsAsFactors = FALSE)
+rna_count <- data.frame(rna_count)
+rownames(rna_count) <- rna_count$V1
+rna_count <- rna_count[,-1]
+ tpm <- countToTpm(rna_count,2)
+ colnames(tpm) <- substr(colnames(tpm),1,16)
+ colnames(tpm) <- gsub(".","-",colnames(tpm),fixed = T)
+ write.csv(tpm,file = paste0("../data/TCGA_rna_counts/tpm/",prefix,"_tpm.csv"))
+}
+
+####读全部的文件
+#setwd("../data/TCGA_rna_counts/")
+#path <- "../data/TCGA_rna_counts/"
+#file_names<- list.files("..\\data\\TCGA_rna_counts")
+#for (i in 1:length(file_names)) {
+#name<-gsub(".csv","",file_names[i])
+  #assign(name,read.csv(paste0(path,file_names[i]), header = TRUE, stringsAsFactors = FALSE))
+#}
+```
+
+
+读取单一数据，循环处理
+```{r}
+temp1 <- list.files(pattern = "Counts.csv$",path = "../data/TCGA_rna_counts/")
+deg_list <- matrix(ncol = 33,nrow = 56602)
+deg_list <- data.frame(deg_list)
+colnames(deg_list) <- temp1
+
+colnames(deg_list) = gsub("TCGA-","",colnames(deg_list),fixed = T)
+colnames(deg_list)= gsub("-Counts.csv","",colnames(deg_list),fixed = T)
+
+ann <- fread("../data/TCGA_rna_counts/annotation_gene.csv",header = T)
+colnames(ann) <- c("id","gene_name","gene_type")
+```
+
+```{r}
+for(i in 19:length(temp1)){
+  inputFile=temp1[i]
+  #读取输入文件
+  reads_count = read.csv(paste0("../data/TCGA_rna_counts/",inputFile,sep=""),header=T,  check.names=F)
+  prefixa = gsub("TCGA-","",inputFile,fixed = T)#give the prefix of files定义生成的文件名前缀
+  prefix = gsub("-Counts.csv","",prefixa,fixed = T)
+  #reads_count = "TCGA-STAD-Counts.csv" #your gene expression file (reads count)指定表达量文件
+ sampleA <- prefix #定义待比较的两个样本的分组名字
+ sampleB <- "Control" #定义待比较的两个样本的分组名字
+log2FC_value <- 1 ###给出差异表达基因的的筛选标准padj
+padj_value <- 0.05 ###给出差异表达基因的的筛选标准log2foldchange
+
+
+##Read and filter the data
+colnames(reads_count)[1] <- "id"
+rownames(reads_count) <- reads_count$id
+reads_count <-reads_count[,-1]
+colnames(reads_count) <- substring(colnames(reads_count),1,16)
+
+reads_count2 <-reads_count[,!duplicated(colnames(reads_count))]
+sample <- as.data.frame(colnames(reads_count2))
+rownames(sample) <- sample$`colnames(reads_count2)`
+sample$sampletype <- "Control"
+sample[which(substring(sample$`colnames(reads_count2)`,14,15)=="01"),"sampletype"] <- prefix
+sample <- subset(sample,select="sampletype")
+sample <- subset(sample,sample$sampletype==sampleA|sample$sampletype==sampleB)
+
+sample <- sample[match(colnames(reads_count2), rownames(sample)),, drop=F]
+reads_count2 <- reads_count2[,match(rownames(sample),colnames(reads_count2)), drop=F]#
+
+#样本文件与表达量文件匹配
+if (!all((sample$sampletype)==prefix)==T){
+dds <- DESeqDataSetFromMatrix(countData=reads_count2, colData=sample, design= ~sampletype)###指定分组
+print(paste("Read in", nrow(dds),"genes"))
+keep <- rowSums(counts(dds))>nrow(sample)/2
+dds <- dds[keep,]
+print(paste(nrow(dds),"genes remained after filtering of genes with all counts less than", nrow(sample)/2, "in all samples"))
+
+####此步骤耗时与样本数相关，若样本超过30，耗时可达5分钟以上
+dds <- DESeq(dds)
+
+## Output normalized results
+#标准化后的结果按整体差异大小排序，同时输出vst转换的结果
+# Get normalized counts
+normalized_counts <- counts(dds, normalized=TRUE)
+
+# Reorder
+# 标准化的结果按整体差异大小排序
+normalized_counts_mad <- apply(normalized_counts, 1, mad)
+normalized_counts <- normalized_counts[order(normalized_counts_mad, decreasing=T), ]
+
+# Output normalized results
+normalized_counts_output = data.frame(id=rownames(normalized_counts), normalized_counts,check.names = F)
+normalized_counts_output1 <- merge(ann,normalized_counts_output,by="id")
+write.table(normalized_counts_output1, file=paste0("../result/temp/",prefix,"_DESeq2_normalized.xls"),
+quote=F, sep="\t", row.names=F, col.names=T)
+
+###variance_Stabilizing_Transformation (vst)
+rld <- varianceStabilizingTransformation(dds,blind = F)
+rlogMat <- assay(rld)
+rlogMat <- rlogMat[order(normalized_counts_mad, decreasing=T), ]
+#####样本数<30 时可用rlog,样本数>30时用varianceStabilizingTransformation，且VST更快
+#It is used by rlog
+#and varianceStabilizingTransformation to wrap up the results into a class for downstream
+#methods, such as plotPCA.
+
+
+#Output vst normalized counts
+rlogMat_output = data.frame(id=rownames(rlogMat), rlogMat,check.names = F)
+rlogMat_output1 <- merge(ann,rlogMat_output,by="id")
+write.table(rlogMat_output1, file=paste0("../result/temp/",prefix,"_DESeq2_normalized_vst.xls"),
+quote=F, sep="\t", row.names=F, col.names=T)
+
+###分离mRNA和lncRNA数据
+mRNA <- subset(rlogMat_output1,rlogMat_output1$gene_type=="protein_coding")
+lncRNA <- subset(rlogMat_output1,rlogMat_output1$gene_type=="lncRNA")
+lncRNA <- unique(subset(lncRNA,select=-c(gene_type)))
+mRNA <- unique(subset(mRNA,select=-c(gene_type)))
+lncRNA <- as.data.frame(lncRNA)
+mRNA <- as.data.frame(mRNA)
+rownames(lncRNA) <- lncRNA$id
+rownames(mRNA) <- mRNA$id
+gene <- rlogMat_output
+
+## Differential expression analysis 
+## 两组样品基因差异分析
+print(paste("DEGs_between", sampleA, sampleB, sep="_"))
+contrastV <- c("sampletype", sampleA, sampleB)
+res <- results(dds,  contrast=contrastV)
+baseA <- counts(dds, normalized=TRUE)[, colData(dds)$sampletype == sampleA]
+if (is.vector(baseA)){
+  baseMeanA <- as.data.frame(baseA)
+} else {
+  baseMeanA <- as.data.frame(rowMeans(baseA))
+}
+baseMeanA <- round(baseMeanA, 3)
+colnames(baseMeanA) <- sampleA
+baseB <- counts(dds, normalized=TRUE)[, colData(dds)$sampletype == sampleB]
+if (is.vector(baseB)){
+  baseMeanB <- as.data.frame(baseB)
+} else {
+  baseMeanB <- as.data.frame(rowMeans(baseB))
+}
+baseMeanB <- round(baseMeanB, 3)
+colnames(baseMeanB) <- sampleB
+res <- cbind(baseMeanA, baseMeanB, as.data.frame(res))
+res <- data.frame(id=rownames(res), res)
+res$baseMean <- round(rowMeans(cbind(baseA, baseB)),3)
+res$padj[is.na(res$padj)] <- 1
+res$pvalue[is.na(res$pvalue)] <- 1
+res$log2FoldChange <- round(res$log2FoldChange,3)
+res$padj <- as.numeric(formatC(res$padj))
+res$pvalue <- as.numeric(formatC(res$pvalue))
+
+res <- res[order(res$padj),]
+
+comp314 <- paste(sampleA, "_vs_", sampleB, sep="_")
+
+file_base <- paste(prefix, "_DESeq2_", comp314, sep="")
+file_base1 <- paste("../temp/rna_deg",file_base,"_", "results.csv", sep="")
+file_base_sig <- paste("../temp/rna_deg",file_base,"_", "results_significant.csv", sep="")
+
+res_output <- as.data.frame(res)
+res_output1 <- merge(ann,res_output,by="id")
+write.csv(res_output1, file=paste0(file_base1),
+quote=F, row.names=F, col.names=T)
+sig <- subset(res_output1,res_output1$padj<padj_value&abs(res_output1$log2FoldChange)>log2FC_value)
+write.csv(sig, file=paste0(file_base_sig),
+quote=F, row.names=F, col.names=T)
+sigm <- subset(sig,sig$gene_type=="protein_coding")
+sigl <- subset(sig,sig$gene_type=="lncRNA")
+
+write.csv(sigm, file=paste0("../temp/rna_deg",file_base,"_mRNA.csv",sep=""),
+quote=F, row.names=F, col.names=T)
+
+write.csv(sigl, file=paste0("../temp/rna_deg",file_base,"_lncRNA.csv",sep=""),
+quote=F, row.names=F, col.names=T)
+    deg_list[1:nrow(sig),i] <- sig$gene_name
+} else {
+  print("All sample type is tumor tissue")
+}
+}
+```
+
+#汇总所有癌症的deg
+```{r}
+path_sig <- "../data/TCGA_rna_counts/degs/"
+deg_sig <- list.files(pattern = "significant.csv$",path = "../data/TCGA_rna_counts/degs/") 
+sig_data <- data.frame()
+#colnames(sig_data) <- c("id","gene_name","gene_type","BLCA","Control","baseMean","log2FoldChange","lfcSE","stat","pvalue","padj","cancer")
+for (i in 1:length(deg_sig)) {
+  name=deg_sig[i]
+  prefix = substr(name,1,4)
+ prefix <- gsub("_","",prefix,fixed = T)
+  rna_sig <- fread(paste0(path_sig,name,sep=""), header = TRUE, stringsAsFactors = FALSE)
+ rna_sig <- data.frame(rna_sig)
+ colnames(rna_sig)[4] <- "case"
+ rna_sig$cancer <- prefix
+ sig_data <- rbind(rna_sig,sig_data)
+}
+
+write.csv(sig_data,file = "../temp/rna_deg_all.csv") 
+####读全部的文件
+#setwd("../data/TCGA_rna_counts/")
+#path <- "../data/TCGA_rna_counts/"
+#file_names<- list.files("..\\data\\TCGA_rna_counts")
+#for (i in 1:length(file_names)) {
+#name<-gsub(".csv","",file_names[i])
+  #assign(name,read.csv(paste0(path,file_names[i]), header = TRUE, stringsAsFactors = FALSE))
+#}
+
+```
