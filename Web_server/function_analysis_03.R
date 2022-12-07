@@ -1,0 +1,139 @@
+options(warn = -1)
+suppressMessages(library(rjson))
+suppressMessages(library(data.table))
+suppressMessages(library(dplyr))
+suppressMessages(library(ggplot2))
+suppressMessages(library(ggsci))
+suppressMessages(library(ggpubr))
+
+
+# 创建结果目录
+if (!dir.exists('result')) {
+   dir.create('result')
+}
+
+if (!dir.exists('result/function_result_output/')) {
+   dir.create('result/function_result_output/')
+}
+
+args <- commandArgs(T)
+
+# 输入参数
+cancer_type = args[1]
+type = args[2]
+p_value <- args[3] %>% as.numeric()
+group <- args[4]
+plot.width <- args[5] %>% as.numeric()
+plot.height <- args[6] %>% as.numeric()
+Kingdom <- args[7]
+Download_single_plot <- args[8]
+
+datadir <- '/data/jinchuandi/'
+# #demo
+# setwd("D:/anlysis-data-r/pancacer_rna/rdata_decontaminate/10_24/")
+# datadir <- "D:/anlysis-data-r/pancacer_rna/rdata_decontaminate/10_24/"
+# cancer_type = "LUSC"
+# type = "gene"
+# p_value <- 0.30
+# group <- "SampleType"
+# plot.width <- 5
+# plot.height <- 4
+# Kingdom <- "Fungus"
+# Download_single_plot <- "No"
+
+if (Kingdom == "Fungus") {
+   filename <- "rawdata_fungi/"
+} else {
+   if (Kingdom == "Bacteria"){
+      filename <- "rawdata/"
+   } else {
+      print(paste0("No functional data for this type ",cancer_type," of ",Kingdom))
+      q()
+   }
+}
+
+obj <- try(dataset <- read.csv(paste0(datadir,filename,cancer_type,"_eggnog_function_data.csv"),check.names = F,header = T,row.names = 1),silent=TRUE)
+if (is(obj, "try-error")){
+   q()
+} else{
+}
+
+dataset <- read.csv(paste0(datadir,filename,cancer_type,"_eggnog_function_data_tumor_normal.csv"),check.names = F,header = T,row.names = 1)
+
+if (type=="gene"){
+   data_sub <- dataset %>%
+      select(c(starts_with("K",ignore.case=F),group,SampleType))
+} else {
+   data_sub <- dataset %>%
+      select(c(starts_with("ko",ignore.case=F),starts_with("map",ignore.case=F),group,SampleType))
+}
+data_sub$SampleType <- as.factor(data_sub$SampleType)
+
+data_sub2 <- data_sub
+data_sub2 <- data_sub2[which(!is.na(data_sub2$SampleType)),]
+if (levels(data_sub2$SampleType) == 1| levels(data_sub2$SampleType) == "Tumor"){
+   print(paste0("There is no adjacent normal tissue sample of ",cancer_type," cancer."))
+} else {
+   result_table <- matrix(ncol = 3,nrow = length(colnames(data_sub2))-1)
+   result_table <- data.frame(result_table)
+   colnames(result_table) <- c("name","p_value","adj_p_value")
+   result_table$name <- colnames(data_sub2)[1:length(colnames(data_sub2))-1]
+   for (i in 1:(length(colnames(data_sub2))-1)) {
+      res_result <- wilcox.test(data_sub2[,i]~data_sub2$SampleType)
+      result_table[i,2] <- res_result[["p.value"]]
+      if (Download_single_plot == "Yes") {
+         if(res_result[["p.value"]]<p_value){
+            pic <- ggplot(data_sub2, aes(x=cancer_type,
+                                         y=colnames(data_sub2)[i],
+                                         fill=cancer_type)) +
+               geom_boxplot()+
+               stat_boxplot(geom = "errorbar",
+                            lwd=0.5,
+                            width=0.2)+
+               geom_jitter(color="black", size=0.8, alpha=0.9)+
+               theme_minimal()+
+               scale_fill_nejm()+
+               theme(legend.position ="none")+
+               stat_compare_means(label = "p.signif")+
+               labs(y=NULL)
+            pic
+            #写出plot
+            ggsave(pic,filename=paste0("result/function_result_output/function_result_",cancer_type,"_",colnames(data_sub2)[i],"_",type,"_",group,"_",p_value,"_single_barplot_result.pdf"),width=plot.width,height=plot.height,units=c("in"))
+         } else {
+            next
+         }
+      } else {
+         print("Not download single plot")
+      }
+   }
+   result_table$adj_p_value <- p.adjust(result_table$p_value)
+   
+   #写出list
+   write.csv(result_table,file = paste0("result/function_result_",cancer_type,"_",type,"_",group,"_table_result.csv"))
+   bar_data <-   aggregate(data_sub2[,1:length(colnames(data_sub2))-1], by = list(data_sub2$SampleType),FUN=mean)
+   colnames(bar_data)[1] <- "group"
+   rownames(bar_data) <- bar_data$group
+   bar_data_sig <- bar_data[,colnames(bar_data) %in% result_table$name[which(result_table$adj_p_value<p_value)]]
+   bar_data_sig <- data.frame(bar_data_sig)
+   colnames(bar_data_sig) <- result_table$name[which(result_table$adj_p_value<p_value)]
+   bar_data_sig$group <- rownames(bar_data)
+   
+   if (!ncol(bar_data_sig) == 1) {
+      bar_data_sig2 <- reshape2::melt(bar_data_sig)
+      bar_plot <-ggplot(bar_data_sig2, aes(x=variable,y=value)) +
+         geom_bar(aes(fill = group), stat = "identity",color="black",size=0.8,
+                  position = position_dodge(0.5), width = 0.5)+
+         scale_fill_manual(values = c("#C77CFF","#00BFC4")) +
+         labs(title = NULL, x = NULL, y = 'value', fill = NULL) +
+         theme(panel.grid = element_blank(), panel.background = element_blank(), axis.line = element_line(colour = 'black')) +
+         theme(axis.text.x = element_text(size = 9, angle = 45, hjust = 1)) 
+      bar_plot
+      
+      #写出plot
+      ggsave(bar_plot, filename=paste0("result/function_result_",cancer_type,"_",type,"_",group,"_",p_value,"_barplot_result.pdf"), width = plot.width, height = plot.height, units = c("in"))
+   } else{
+      print(paste0("There is no significant ", type," under this P value in ",cancer_type," cancer.")) 
+   }
+}
+### RUN example
+# Rscript function_analysis_03.R 'LUSC' 'gene' '0.30' 'SampleType' '5' '4' 'Fungus' 'No'
